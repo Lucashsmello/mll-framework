@@ -1,6 +1,7 @@
 import numpy as np
-from ProbDistribution import Labelling, Annotation, ProbabilityDistribution
+from ProbDistribution import Labelling, Annotation, ProbabilityDistribution, RPCbadDistribution
 from more_itertools import chunked
+import itertools
 
 
 class MLMetric:
@@ -20,7 +21,9 @@ class MLMetric:
                 risk += (losses[:m]*probs[:m]).sum()
             else:
                 risk += (losses*probs).sum()
-        return risk
+        if(self.is_loss):
+            return risk
+        return -risk
 
     def maxrisk(self, Pdist: ProbabilityDistribution):
         batch_size = 32
@@ -39,20 +42,52 @@ class MLMetric:
             if(r < min_risk):
                 min_risk = r
                 min_risk_sol = L
-        # print(">", self.__class__.__name__, min_risk_sol, min_risk)
         return (min_risk_sol, min_risk)
 
     def regret(self, prediction, Pdist) -> float:
         r = self.risk(prediction, Pdist)
-        if(self.is_loss):
-            return r - self.minrisk(Pdist)[1]
-        return self.maxrisk(Pdist)[1] - r
+        # if(self.is_loss):
+        return r - self.minrisk(Pdist)[1]
+        # return self.maxrisk(Pdist)[1] - r
 
     def measure(self, target: Annotation, predicted: Annotation) -> float:
         pass
 
     def __call__(self, target: Annotation, predicted: Annotation) -> float:
         return self.measure(target, predicted)
+
+
+class RankingMetric(MLMetric):
+    """
+    In the vector of rankings R, R[i] means the ranking of label i.
+    """
+
+    def __init__(self, is_loss: bool):
+        super().__init__(is_loss)
+
+    def minrisk(self, Pdist: ProbabilityDistribution):
+        min_risk = 128.0
+        n = Pdist.getNumberOfLabels()
+        if(isinstance(Pdist, RPCbadDistribution)):
+            for rank_template in itertools.permutations(range(3)):
+                ranking = [0]*n
+                k = 1
+                for r in rank_template:
+                    a = n//2 if r == 2 else n//4
+                    for i in range(a):
+                        ranking[r*(n//4)+i] = k
+                        k += 1
+                r = self.risk(ranking, Pdist)
+                if(r < min_risk):
+                    min_risk = r
+                    min_risk_sol = ranking
+            return (min_risk_sol, min_risk)
+        for ranking in itertools.permutations(range(1, n+1)):
+            r = self.risk(ranking, Pdist)
+            if(r < min_risk):
+                min_risk = r
+                min_risk_sol = ranking
+        return (min_risk_sol, min_risk)
 
 
 class HammingLoss(MLMetric):
@@ -73,6 +108,25 @@ class HammingLoss(MLMetric):
     def minrisk(self, Pdist: ProbabilityDistribution):
         L = Labelling([1 if(p >= 1/2) else 0 for p in Pdist.marginal()])
         return (L, self.risk(L, Pdist))
+
+
+class SubsetLoss(MLMetric):
+    def __init__(self):
+        super().__init__(is_loss=True)
+
+    def risk(self, prediction, Pdist: ProbabilityDistribution):
+        return 1-Pdist.fulljoint(prediction)
+
+    def measure(self, target, predicted) -> float:
+        s = 0
+        for y1, y2 in zip(target.vals, predicted.vals):
+            if(y1 != y2):
+                s += 1
+        return s/len(target)
+
+    def minrisk(self, Pdist: ProbabilityDistribution):
+        mode = Pdist.mode()
+        return (mode, self.risk(mode, Pdist))
 
 
 class Fmeasure(MLMetric):
@@ -126,6 +180,74 @@ class Fmeasure(MLMetric):
         return Labelling(best[0]), 1-best[1]
 
 
+class AveragePrecision(RankingMetric):
+    def __init__(self):
+        super().__init__(is_loss=False)
+
+    def measure(self, target: Labelling, predicted) -> float:
+        avg_prec = 0.0
+        npos = target.positives()
+        if(npos == 0):
+            return 1.0
+        pos_idxs = target.where_positive()
+        for i in pos_idxs:
+            yi_rank = predicted[i]
+            s = sum([1 for j in pos_idxs if predicted[j] <= yi_rank])
+            avg_prec += s / yi_rank
+        return avg_prec / npos
+
+
+class RankingLoss(RankingMetric):
+    def __init__(self, normalized=2):
+        super().__init__(is_loss=True)
+        self.normalized = normalized
+
+    def measure(self, target: Labelling, predicted) -> float:
+        s = 0
+        for ri, yi in zip(predicted, target):
+            if(yi == 0):
+                continue
+            for rj, yj in zip(predicted, target):
+                if(yj == 1):
+                    continue
+                if(ri > rj):
+                    s += 1
+        num_pos = target.positives()
+        n = len(target)
+        if(self.normalized == 2):
+            return s/(num_pos*(n-num_pos))
+        if(self.normalized == 1):
+            return 4*s/(n*n)
+        return s
+
+    def minrisk(self, Pdist: ProbabilityDistribution):
+        marginal = Pdist.marginal()
+        temp = np.argsort(-np.array(marginal))
+        ranking = np.empty_like(temp)
+        ranking[temp] = np.arange(len(temp)) + 1
+        return ranking, self.risk(ranking, Pdist)
+
+
+class Coverage(RankingMetric):
+    def __init__(self):
+        super().__init__(is_loss=True)
+
+    def measure(self, target: Labelling, predicted) -> float:
+        positives_idxs = target.where_positive()
+        if(len(positives_idxs)==0):
+            return 0.0
+        return max([predicted[pi] for pi in positives_idxs])# / len(target) / target.positives()
+
+
+class ReciprocalRank(RankingMetric):
+    def __init__(self):
+        super().__init__(is_loss=False)
+
+    def measure(self, target: Labelling, predicted) -> float:
+        positives_idxs = target.where_positive()
+        return sum([1/predicted[pi] for pi in positives_idxs]) / sum(1/np.arange(1, target.positives()+1))
+
+
 def toint(L):
     v = 0
     for l in L:
@@ -165,31 +287,3 @@ def hammingloss4(yt, yp):
     n = (n & 0x0000FFFF0000FFFF) + ((n & 0xFFFF0000FFFF0000) >> 16)
     n = (n & 0x00000000FFFFFFFF) + ((n & 0xFFFFFFFF00000000) >> 32)  # This last & isn't strictly necessary.
     return n/123
-
-
-if __name__ == "__main__":
-    from time import time
-    n = 123
-    l1 = Labelling(np.random.randint(2, size=n).tolist())
-    l2 = Labelling(np.random.randint(2, size=n).tolist())
-    b1 = toint(l1.vals)
-    b2 = toint(l2.vals)
-
-    niters = 10000
-    t1 = time()
-    for _ in range(niters):
-        hammingloss1(l1, l2)
-    t2 = time()
-    for _ in range(niters):
-        hammingloss2(l1, l2)
-    t3 = time()
-    for _ in range(niters):
-        hammingloss3(l1, l2)
-    t4 = time()
-    for _ in range(niters):
-        hammingloss4(b1, b2)
-    t5 = time()
-    print("numpy: %.1fms" % ((t2-t1)*1000))
-    print("classic: %.1fms" % ((t3-t2)*1000))
-    print("adaptative: %.1fms" % ((t4-t3)*1000))
-    print("bits: %.1fms" % ((t5-t4)*1000))
