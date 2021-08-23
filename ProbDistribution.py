@@ -4,7 +4,6 @@ import itertools
 import math
 from math import isclose, sqrt
 from mybeta import mybeta3
-from numba import jit
 
 
 class Annotation:

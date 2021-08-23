@@ -3,7 +3,6 @@ import numpy as np
 from ProbDistribution import Labelling, Annotation, ProbabilityDistribution, RPCbadDistribution
 from more_itertools import chunked
 import itertools
-from numba import jit
 
 
 class MLMetric:
