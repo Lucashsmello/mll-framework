@@ -2,8 +2,9 @@ import numpy as np
 from typing import Iterator, Tuple, List
 import itertools
 import math
-from math import sqrt
+from math import isclose, sqrt
 from mybeta import mybeta3
+from numba import jit
 
 
 class Annotation:
@@ -13,7 +14,10 @@ class Annotation:
 class Labelling(Annotation):
     @staticmethod
     def iterAll(n: int):
+        # L = Labelling(None)
         for c in itertools.product([0, 1], repeat=n):
+            # L.vals = c
+            # yield L
             yield Labelling(c)
 
     def __init__(self, vals):
@@ -103,7 +107,7 @@ class ProbabilityDistribution:
         for L, p in self.iterProbs(threshold=0):
             if(p > maxp):
                 maxp = p
-                maxL = L
+                maxL = L.copy()
         return maxL
 
     def getProbSize(self, i: int, size: int) -> float:
@@ -205,10 +209,11 @@ class GenericProbDist(ProbabilityDistribution):
     def __init__(self, probs):
         self.probs = probs
         self.n = int(math.log2(len(probs)))
+        self.probsize = precomputeProbSize(self)
 
     def fulljoint(self, labelling):
         h = 0
-        for l in labelling[::-1]:
+        for l in labelling:
             h = (h << 1) | l
         return self.probs[h]
 
@@ -221,6 +226,39 @@ class GenericProbDist(ProbabilityDistribution):
         probs /= probs.sum()
         return GenericProbDist(probs)
 
+    def iterProbs(self, threshold=0) -> Iterator[Tuple[Labelling, float]]:
+        for i, L in enumerate(Labelling.iterAll(self.n)):
+            p = self.probs[i]
+            if(p > threshold):
+                yield L, p
+
+    def getProbSize(self, i: int, size: int) -> float:
+        return self.probsize[i, size]
+
+    def joint(self, vals):
+        h1 = 0
+        h0 = 0
+        for i, v in vals:
+            x = 2**(self.n-i-1)
+            if(v == 1):
+                h1 += x
+            else:
+                h0 += x
+        p = 0.0
+        for i in range(2**self.n):
+            if((i & h1) == h1 and (i & h0) == 0):
+                p += self.probs[i]
+
+        return p
+
+    # def mode(self) -> Labelling:
+    #     idx = np.argmax(self.probs)
+    #     L = np.empty(self.n, dtype=int)
+    #     for i in range(self.n):
+    #         L[-i-1] = idx & 1
+    #         idx = idx >> 1
+    #     return Labelling(L)
+
 
 class ProbDistTree(GenericProbDist):
     def __init__(self, prob_tree: List):
@@ -228,15 +266,18 @@ class ProbDistTree(GenericProbDist):
         n = len(prob_tree)
         product_tmp = [1-prob_tree[0][0], prob_tree[0][0]]
         self.marg = np.empty(n, dtype=float)
-        self.marg[0] = prob_tree[0][0]
+        self.marg[-1] = prob_tree[0][0]
         for i in range(1, n):
             Pi = prob_tree[i]
             p1 = product_tmp*(1-Pi)
             p2 = product_tmp*Pi
-            self.marg[i] = p2.sum()
+            self.marg[-i-1] = p2.sum()
             product_tmp = np.hstack((p1, p2))
 
         super().__init__(product_tmp)
+
+    def marginal(self):
+        return self.marg
 
     @staticmethod
     def random(n, ld, dd, mu0=0.5, thv=0.5):

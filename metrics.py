@@ -1,7 +1,9 @@
+from typing import List
 import numpy as np
 from ProbDistribution import Labelling, Annotation, ProbabilityDistribution, RPCbadDistribution
 from more_itertools import chunked
 import itertools
+from numba import jit
 
 
 class MLMetric:
@@ -10,23 +12,13 @@ class MLMetric:
 
     def risk(self, prediction, Pdist: ProbabilityDistribution) -> float:
         batch_size = 32
-        losses = np.empty(batch_size, dtype=np.float)
         risk = 0.0
         for lps in chunked(Pdist.iterProbs(threshold=0), batch_size):
-            labels, probs = zip(*lps)
-            for i, l in enumerate(labels):
-                losses[i] = self.measure(l, prediction)
-            m = len(probs)
-            if(m < batch_size):
-                risk += (losses[:m]*probs[:m]).sum()
-            else:
-                risk += (losses*probs).sum()
-        if(self.is_loss):
-            return risk
-        return -risk
+            for l, p in lps:
+                risk += self.measure(l, prediction) * p
+        return risk
 
     def maxrisk(self, Pdist: ProbabilityDistribution):
-        batch_size = 32
         max_risk = 0.0
         for L in Labelling.iterAll(Pdist.getNumberOfLabels()):
             r = self.risk(L, Pdist)
@@ -175,9 +167,25 @@ class Fmeasure(MLMetric):
         bests_Y = [([0]*n, Pdist.fulljoint([0]*n))]
         bests_Y += [predict_k(i) for i in range(1, n+1)]
         V = [Y[1] for Y in bests_Y]
-        v = np.argsort(V)[-1]
+        v = np.argmax(V)
         best = bests_Y[v]
+        # assert(np.isclose(1-best[1], super().minrisk(Pdist)[1]))
         return Labelling(best[0]), 1-best[1]
+
+
+class JaccardDistance(MLMetric):
+    def __init__(self):
+        super().__init__(is_loss=True)
+
+    def measure(self, target, predicted) -> float:
+        s = sum(target.vals)+sum(predicted.vals)
+        if(s == 0):
+            return 0
+
+        a = 0
+        for yt, yp in zip(target.vals, predicted.vals):
+            a += yt & yp
+        return 1-a/(s-a)
 
 
 class AveragePrecision(RankingMetric):
@@ -234,9 +242,9 @@ class Coverage(RankingMetric):
 
     def measure(self, target: Labelling, predicted) -> float:
         positives_idxs = target.where_positive()
-        if(len(positives_idxs)==0):
+        if(len(positives_idxs) == 0):
             return 0.0
-        return max([predicted[pi] for pi in positives_idxs])# / len(target) / target.positives()
+        return max([predicted[pi] for pi in positives_idxs])  # / len(target) / target.positives()
 
 
 class ReciprocalRank(RankingMetric):

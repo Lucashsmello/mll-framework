@@ -7,6 +7,23 @@ def br(P) -> Labelling:
     return Labelling(np.where(M >= 1/2, 1, 0))
 
 
+def dbr(P: ProbabilityDistribution) -> Labelling:
+    n = P.getNumberOfLabels()
+    M = P.marginal()
+    ybr = np.where(M >= 1/2, 1, 0)
+    L = Labelling.zeros(n)
+    for i in range(n):
+        vi = ybr[i]
+        ybr[i] = 0
+        p0 = P.fulljoint(ybr)
+        ybr[i] = 1
+        p1 = P.fulljoint(ybr)
+        ybr[i] = vi
+
+        L[i] = 1 if (p1+1e-20)/(p0+p1+2e-20) >= 1/2 else 0
+    return L
+
+
 def _rpc_labelscore(P, i):
     n = P.getNumberOfLabels()
     s = 0.0
